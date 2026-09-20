@@ -1,0 +1,55 @@
+[Unit]
+Description=Sophos Login Daemon
+Documentation=https://github.com/Anujsjm1405/sophos-login-daemon
+
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+
+ExecStart=/usr/bin/sophos-login
+
+User=root
+Group=root
+
+# Process security
+NoNewPrivileges=true
+PrivateTmp=true
+PrivateDevices=true
+
+# Filesystem protection
+ProtectSystem=strict
+ProtectHome=true
+
+# Kernel / control-plane protection
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectKernelLogs=true
+ProtectControlGroups=true
+
+# Privilege restrictions
+RestrictSUIDSGID=true
+LockPersonality=true
+RestrictRealtime=true
+RestrictNamespaces=true
+
+# No Linux capabilities are required
+CapabilityBoundingSet=
+
+# System-call architecture
+SystemCallArchitectures=native
+
+# Network access required by nmcli/curl
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+
+# Resource limits
+LimitNOFILE=1024
+LimitNPROC=64
+
+# Execution timeout
+TimeoutStartSec=30
+TimeoutStopSec=10
+
+# The service is intentionally dispatcher-triggered.
+# Do not enable it at boot.

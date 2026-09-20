@@ -1,0 +1,1038 @@
+#!/usr/bin/env bash
+
+# Sophos Login Daemon setup utility.
+# Pure Bash terminal UI.
+set -u
+
+CONFIG="/etc/sophos-login/config"
+CREDENTIALS="/etc/sophos-login/credentials"
+
+# ============================================================
+# ANSI
+# ============================================================
+
+ESC=$'\033'
+
+RESET="${ESC}[0m"
+BOLD="${ESC}[1m"
+
+# Neutral UI colors
+WHITE="${ESC}[38;2;232;232;238m"
+GRAY="${ESC}[38;2;148;148;164m"
+
+# ============================================================
+# SOPHOS LOGO COLORS
+#
+# These colors are ONLY used for:
+#   - Large SOPHOS logo
+#   - Decorative separators
+#   - Status indicators
+#
+# Normal UI text remains neutral.
+# ============================================================
+
+LILAC="${ESC}[38;2;200;155;255m"
+LAVENDER="${ESC}[38;2;213;166;255m"
+PURPLE="${ESC}[38;2;217;135;245m"
+PINK="${ESC}[38;2;232;116;211m"
+CORAL="${ESC}[38;2;255;100;111m"
+ORANGE="${ESC}[38;2;255;145;55m"
+
+GREEN="${ESC}[38;2;137;220;152m"
+YELLOW="${ESC}[38;2;248;201;91m"
+RED="${ESC}[38;2;255;95;104m"
+
+# ============================================================
+# CLEANUP
+# ============================================================
+
+cleanup() {
+    printf '%s%s' "$RESET" "${ESC}[?25h"
+}
+
+trap cleanup EXIT
+trap 'exit 130' INT TERM
+
+# ============================================================
+# TERMINAL
+# ============================================================
+
+clear_screen() {
+    printf '%s' "${ESC}[2J${ESC}[H"
+}
+
+terminal_columns() {
+    local columns
+
+    columns="$(tput cols 2>/dev/null || true)"
+
+    if [[ "$columns" =~ ^[0-9]+$ ]] && (( columns > 0 )); then
+        printf '%s' "$columns"
+    else
+        printf '80'
+    fi
+}
+
+# ============================================================
+# CENTER TEXT
+# ============================================================
+
+centered() {
+    local text="$1"
+    local color="$2"
+    local columns
+    local padding=0
+
+    columns="$(terminal_columns)"
+
+    if (( columns > ${#text} )); then
+        padding=$(( (columns - ${#text}) / 2 ))
+    fi
+
+    printf '%*s%s%s%s\n' \
+        "$padding" \
+        '' \
+        "$color" \
+        "$text" \
+        "$RESET"
+}
+
+# ============================================================
+# GRADIENT SEPARATOR
+# ============================================================
+
+print_separator() {
+    local colors=()
+    local columns
+    local width
+    local base
+    local extra
+    local index
+    local count
+    local line
+
+    colors=(
+        "$LILAC"
+        "$LAVENDER"
+        "$PURPLE"
+        "$PINK"
+        "$CORAL"
+        "$ORANGE"
+    )
+
+    columns="$(terminal_columns)"
+
+    width=$(( columns - 4 ))
+
+    (( width < 16 )) && width=16
+
+    base=$(( width / ${#colors[@]} ))
+    extra=$(( width % ${#colors[@]} ))
+
+    printf '  '
+
+    for index in "${!colors[@]}"; do
+
+        count=$base
+
+        if (( index < extra )); then
+            (( count++ ))
+        fi
+
+        printf -v line '%*s' "$count" ''
+        line="${line// /─}"
+
+        printf '%s%s' \
+            "${colors[index]}" \
+            "$line"
+    done
+
+    printf '%s\n' "$RESET"
+}
+
+# ============================================================
+# SOPHOS LOGO
+#
+# Sunset gradient:
+#
+#   Lilac
+#   Lavender
+#   Purple
+#   Pink
+#   Coral
+#   Orange
+# ============================================================
+
+print_logo() {
+
+    local rows=()
+    local colors=()
+    local index
+
+    rows=(
+        ' ███████╗ ██████╗ ██████╗ ██   ██╗ ██████╗ ███████╗'
+        ' ██╔════╝██╔═══██╗██╔══██╗██║  ██║██╔═══██╗██╔════╝'
+        ' ███████╗██║   ██║██████╔╝███████║██║   ██║███████╗'
+        ' ╚════██║██║   ██║██╔═══╝ ██╔══██║██║   ██║╚════██║'
+        ' ███████║╚██████╔╝██║     ██║  ██║╚██████╔╝███████║'
+        ' ╚══════╝ ╚═════╝ ╚═╝     ╚═╝  ╚═╝ ╚═════╝ ╚══════╝'
+    )
+
+    colors=(
+        "$LILAC"
+        "$LAVENDER"
+        "$PURPLE"
+        "$PINK"
+        "$CORAL"
+        "$ORANGE"
+    )
+
+    printf '\n'
+
+    for index in "${!rows[@]}"; do
+
+        centered \
+            "${rows[index]}" \
+            "${colors[index]}${BOLD}"
+
+    done
+
+    printf '\n'
+
+    # --------------------------------------------------------
+    # NORMAL / NEUTRAL TITLE
+    # --------------------------------------------------------
+
+    centered \
+        'SOPHOS LOGIN SETUP' \
+        "${WHITE}${BOLD}"
+
+    centered \
+        'Linux Wi-Fi Authentication' \
+        "$GRAY"
+
+    printf '\n'
+
+    print_separator
+
+    printf '\n'
+}
+
+# ============================================================
+# LOGGING
+# ============================================================
+
+log_success() {
+    printf '  %s✓%s %s\n' \
+        "$GREEN" \
+        "$RESET" \
+        "$WHITE$1"
+}
+
+log_error() {
+    printf '  %s✗%s %s\n' \
+        "$RED" \
+        "$RESET" \
+        "$WHITE$1"
+}
+
+log_info() {
+    printf '  %s›%s %s\n' \
+        "$GRAY" \
+        "$RESET" \
+        "$WHITE$1"
+}
+
+log_warning() {
+    printf '  %s!%s %s\n' \
+        "$YELLOW" \
+        "$RESET" \
+        "$WHITE$1"
+}
+
+# ============================================================
+# PAUSE
+# ============================================================
+
+pause_screen() {
+
+    local ignored
+
+    printf '\n  %sPress Enter to continue...%s' \
+        "$GRAY" \
+        "$RESET"
+
+    IFS= read -r ignored || true
+}
+
+# ============================================================
+# PASSWORD INPUT
+#
+# Password is represented visually while typing:
+#
+#   New password: ●●●●●●●
+#
+# The actual password is never printed.
+# ============================================================
+
+read_password() {
+
+    local prompt="$1"
+    local password=''
+    local character
+
+    printf '  %s%s%s' \
+        "$WHITE" \
+        "$prompt" \
+        "$RESET"
+
+    while IFS= read -r -s -n 1 character; do
+
+        # ----------------------------------------------------
+        # ENTER
+        # ----------------------------------------------------
+
+        if [[ -z "$character" ]]; then
+
+            printf '\n'
+
+            REPLY="$password"
+
+            return 0
+        fi
+
+        # ----------------------------------------------------
+        # BACKSPACE
+        # ----------------------------------------------------
+
+        if [[ "$character" == $'\177' ||
+              "$character" == $'\b' ]]; then
+
+            if [[ -n "$password" ]]; then
+
+                password="${password%?}"
+
+                printf '\b \b'
+            fi
+
+            continue
+        fi
+
+        # ----------------------------------------------------
+        # IGNORE CONTROL CHARACTERS
+        # ----------------------------------------------------
+
+        [[ "$character" == $'\e' ||
+           "$character" == $'\004' ]] && continue
+
+        # ----------------------------------------------------
+        # STORE CHARACTER
+        # ----------------------------------------------------
+
+        password+="$character"
+
+        # ----------------------------------------------------
+        # DISPLAY MASK
+        # ----------------------------------------------------
+
+        printf '%s●%s' \
+            "$WHITE" \
+            "$RESET"
+
+    done
+
+    printf '\n'
+
+    return 1
+}
+
+# ============================================================
+# ROOT
+# ============================================================
+
+require_root() {
+
+    if (( EUID != 0 )); then
+
+        clear_screen
+
+        print_logo
+
+        log_error \
+            'This program must be run as root.'
+
+        printf '\n'
+
+        printf \
+            '  Run: %ssudo sophos-login-setup%s\n\n' \
+            "$WHITE$BOLD" \
+            "$RESET"
+
+        exit 1
+    fi
+}
+
+# ============================================================
+# CONFIGURATION
+# ============================================================
+
+load_config() {
+
+    if [[ ! -r "$CONFIG" ]]; then
+
+        log_error \
+            "Configuration file not found: $CONFIG"
+
+        return 1
+    fi
+
+    # shellcheck disable=SC1090
+    source "$CONFIG"
+
+    if [[ -z "${TARGET_SSID:-}" ||
+          -z "${GATEWAY:-}" ||
+          -z "${TEST_URL:-}" ]]; then
+
+        log_error \
+            'Configuration is missing TARGET_SSID, GATEWAY, or TEST_URL.'
+
+        return 1
+    fi
+}
+
+# ============================================================
+# CREDENTIALS
+# ============================================================
+
+load_credentials() {
+
+    USERNAME=''
+    PASSWORD=''
+
+    [[ -r "$CREDENTIALS" ]] || return 0
+
+    # shellcheck disable=SC1090
+    source "$CREDENTIALS"
+
+    USERNAME="${USERNAME:-}"
+    PASSWORD="${PASSWORD:-}"
+}
+
+# ============================================================
+# NETWORK
+# ============================================================
+
+get_current_ssid() {
+
+    nmcli \
+        -t \
+        -f ACTIVE,SSID \
+        dev wifi 2>/dev/null |
+        awk -F: '$1 == "yes" {print $2; exit}'
+}
+
+check_internet() {
+
+    curl \
+        --silent \
+        --show-error \
+        --head \
+        --max-time 5 \
+        --fail \
+        "$TEST_URL" >/dev/null 2>&1
+}
+
+# ============================================================
+# SOPHOS AUTHENTICATION
+#
+# Sends the same login request used by the daemon.
+#
+# This function does NOT depend on Internet connectivity.
+# It directly tests whether Sophos accepts the credentials.
+# ============================================================
+
+authenticate() {
+
+    local login_url
+    local timestamp
+    local response
+
+    login_url="http://${GATEWAY}/login.xml"
+
+    timestamp="$(date +%s%3N)"
+
+    response="$(
+        curl \
+            --silent \
+            --show-error \
+            --max-time 10 \
+            --url "$login_url" \
+            -H 'Accept: */*' \
+            -H 'Content-Type: application/x-www-form-urlencoded' \
+            -H "Origin: http://${GATEWAY}" \
+            -H "Referer: http://${GATEWAY}/" \
+            --data-urlencode 'mode=191' \
+            --data-urlencode "username=${USERNAME}" \
+            --data-urlencode "password=${PASSWORD}" \
+            --data-urlencode "a=${timestamp}" \
+            --data-urlencode 'producttype=0' \
+            --insecure
+    )"
+
+    [[ -n "$response" ]] &&
+        grep -q \
+            '<status><!\[CDATA\[LIVE\]\]></status>' \
+            <<< "$response"
+}
+
+# ============================================================
+# SAVE CREDENTIALS
+# ============================================================
+
+save_credentials() {
+
+    local temporary
+
+    mkdir -p "${CREDENTIALS%/*}"
+
+    temporary="$(
+        mktemp "${CREDENTIALS}.XXXXXX"
+    )" || {
+
+        log_error \
+            'Could not create a secure temporary credentials file.'
+
+        return 1
+    }
+
+    if ! printf \
+        'USERNAME=%q\nPASSWORD=%q\n' \
+        "$USERNAME" \
+        "$PASSWORD" \
+        > "$temporary"; then
+
+        rm -f "$temporary"
+
+        log_error \
+            'Could not write the temporary credentials file.'
+
+        return 1
+    fi
+
+    if ! chmod 600 "$temporary" ||
+       ! chown root:root "$temporary" ||
+       ! mv -f "$temporary" "$CREDENTIALS"; then
+
+        rm -f "$temporary"
+
+        log_error \
+            'Could not install the credentials file.'
+
+        return 1
+    fi
+
+    return 0
+}
+
+# ============================================================
+# TEST LOGIN
+# ============================================================
+
+test_login() {
+
+    local ssid
+
+    clear_screen
+
+    print_logo
+
+    printf \
+        '  %s%sTest Login%s\n' \
+        "$WHITE" \
+        "$BOLD" \
+        "$RESET"
+
+    print_separator
+
+    printf '\n'
+
+    load_config || {
+        pause_screen
+        return
+    }
+
+    load_credentials
+
+    if [[ -z "$USERNAME" ||
+          -z "$PASSWORD" ]]; then
+
+        log_error \
+            'Credentials are not configured.'
+
+        log_info \
+            "Choose 'Update credentials' first."
+
+        pause_screen
+
+        return
+    fi
+
+    log_info \
+        'Detecting current network...'
+
+    ssid="$(get_current_ssid)"
+
+    if [[ -z "$ssid" ]]; then
+
+        log_error \
+            'No active Wi-Fi connection; login test skipped.'
+
+        pause_screen
+
+        return
+    fi
+
+    printf '\n'
+
+    printf \
+        '  Current SSID : %s%s%s\n' \
+        "$WHITE" \
+        "$ssid" \
+        "$RESET"
+
+    printf \
+        '  Target SSID  : %s%s%s\n' \
+        "$WHITE" \
+        "$TARGET_SSID" \
+        "$RESET"
+
+    printf '\n'
+
+    if [[ "$ssid" != "$TARGET_SSID" ]]; then
+
+        log_warning \
+            'Target network is not connected; login test skipped.'
+
+        pause_screen
+
+        return
+    fi
+
+    log_success \
+        'Target network detected.'
+
+    # --------------------------------------------------------
+    # INTERNET ALREADY AVAILABLE
+    # --------------------------------------------------------
+
+    if check_internet; then
+
+        log_success \
+            'Internet is already available.'
+
+        log_info \
+            'Sophos login is not required.'
+
+        pause_screen
+
+        return
+    fi
+
+    # --------------------------------------------------------
+    # AUTHENTICATION REQUIRED
+    # --------------------------------------------------------
+
+    log_info \
+        'Internet unavailable; attempting Sophos authentication...'
+
+    if ! authenticate; then
+
+        log_error \
+            'Sophos authentication failed.'
+
+        pause_screen
+
+        return
+    fi
+
+    log_success \
+        'Sophos authentication succeeded.'
+
+    log_info \
+        'Verifying Internet connectivity...'
+
+    sleep 2
+
+    if check_internet; then
+
+        log_success \
+            'Internet connectivity verified.'
+
+    else
+
+        log_error \
+            'Login succeeded but Internet verification failed.'
+
+    fi
+
+    pause_screen
+}
+
+# ============================================================
+# UPDATE CREDENTIALS
+#
+# IMPORTANT BEHAVIOR:
+#
+# If the target network is connected:
+#
+#   1. Enter new credentials.
+#   2. Authenticate immediately with the new credentials.
+#   3. Verify Internet connectivity.
+#   4. Save credentials only after successful authentication.
+#
+# This means changing the password causes an immediate
+# re-login, even if Internet was already available.
+#
+# If the target network is NOT connected:
+#
+#   - Credentials can be saved.
+#   - Authentication is deferred until the next connection.
+# ============================================================
+
+update_credentials() {
+
+    local new_username
+    local new_password
+    local old_username
+    local old_password
+    local ssid
+    local confirm
+
+    clear_screen
+
+    print_logo
+
+    printf \
+        '  %s%sUpdate Credentials%s\n' \
+        "$WHITE" \
+        "$BOLD" \
+        "$RESET"
+
+    print_separator
+
+    printf '\n'
+
+    load_config || {
+        pause_screen
+        return
+    }
+
+    load_credentials
+
+    # --------------------------------------------------------
+    # CURRENT USERNAME
+    # --------------------------------------------------------
+
+    if [[ -n "$USERNAME" ]]; then
+
+        printf \
+            '  Current username: %s%s%s\n\n' \
+            "$WHITE" \
+            "$USERNAME" \
+            "$RESET"
+
+    else
+
+        printf \
+            '  %sNo username configured.%s\n\n' \
+            "$GRAY" \
+            "$RESET"
+
+    fi
+
+    # --------------------------------------------------------
+    # NEW USERNAME
+    # --------------------------------------------------------
+
+    printf \
+        '  %sNew username [Enter to keep current]: %s' \
+        "$WHITE" \
+        "$RESET"
+
+    IFS= read -r new_username || return
+
+    [[ -z "$new_username" ]] &&
+        new_username="$USERNAME"
+
+    printf '\n'
+
+    # --------------------------------------------------------
+    # NEW PASSWORD
+    # --------------------------------------------------------
+
+    if ! read_password 'New password: '; then
+
+        log_warning \
+            'Credential update cancelled.'
+
+        pause_screen
+
+        return
+    fi
+
+    new_password="$REPLY"
+
+    if [[ -z "$new_username" ||
+          -z "$new_password" ]]; then
+
+        log_error \
+            'Username and password cannot be empty.'
+
+        pause_screen
+
+        return
+    fi
+
+    # --------------------------------------------------------
+    # SAVE OLD VALUES IN MEMORY
+    # --------------------------------------------------------
+
+    old_username="$USERNAME"
+    old_password="$PASSWORD"
+
+    USERNAME="$new_username"
+    PASSWORD="$new_password"
+
+    printf '\n'
+
+    # --------------------------------------------------------
+    # DETECT NETWORK
+    # --------------------------------------------------------
+
+    log_info \
+        'Detecting current network...'
+
+    ssid="$(get_current_ssid)"
+
+    # --------------------------------------------------------
+    # NOT CONNECTED TO TARGET NETWORK
+    # --------------------------------------------------------
+
+    if [[ "$ssid" != "$TARGET_SSID" ]]; then
+
+        log_warning \
+            'Target network is not connected; re-login was skipped.'
+
+        printf '\n'
+
+        printf \
+            '  %sSave credentials anyway? [y/N]: %s' \
+            "$WHITE" \
+            "$RESET"
+
+        IFS= read -r confirm || confirm=''
+
+        if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+
+            USERNAME="$old_username"
+            PASSWORD="$old_password"
+
+            log_info \
+                'Changes discarded.'
+
+            pause_screen
+
+            return
+        fi
+
+        if save_credentials; then
+
+            log_success \
+                'Credentials updated successfully.'
+
+            log_info \
+                'New credentials will be used on the next target-network login.'
+        else
+
+            USERNAME="$old_username"
+            PASSWORD="$old_password"
+        fi
+
+        pause_screen
+
+        return
+    fi
+
+    # --------------------------------------------------------
+    # TARGET NETWORK CONNECTED
+    #
+    # ALWAYS RE-AUTHENTICATE.
+    #
+    # We deliberately do NOT check Internet first.
+    #
+    # The user changed credentials, so we must send a fresh
+    # Sophos authentication request using the new credentials.
+    # --------------------------------------------------------
+
+    log_success \
+        'Target network detected.'
+
+    log_info \
+        'Authenticating with the new credentials...'
+
+    if ! authenticate; then
+
+        USERNAME="$old_username"
+        PASSWORD="$old_password"
+
+        log_error \
+            'Sophos re-login failed.'
+
+        log_error \
+            'Existing credentials were not changed.'
+
+        pause_screen
+
+        return
+    fi
+
+    # --------------------------------------------------------
+    # RE-LOGIN SUCCEEDED
+    # --------------------------------------------------------
+
+    log_success \
+        'Sophos re-login succeeded.'
+
+    # --------------------------------------------------------
+    # VERIFY INTERNET
+    # --------------------------------------------------------
+
+    log_info \
+        'Verifying Internet connectivity...'
+
+    sleep 2
+
+    if ! check_internet; then
+
+        USERNAME="$old_username"
+        PASSWORD="$old_password"
+
+        log_error \
+            'Re-login succeeded but Internet verification failed.'
+
+        log_error \
+            'Existing credentials were not changed.'
+
+        pause_screen
+
+        return
+    fi
+
+    log_success \
+        'Internet connectivity verified.'
+
+    # --------------------------------------------------------
+    # SAVE ONLY AFTER SUCCESSFUL RE-LOGIN
+    # --------------------------------------------------------
+
+    if save_credentials; then
+
+        log_success \
+            'Credentials updated successfully.'
+
+        log_success \
+            'New credentials are now active.'
+
+    else
+
+        USERNAME="$old_username"
+        PASSWORD="$old_password"
+
+        log_error \
+            'Credentials could not be saved.'
+    fi
+
+    pause_screen
+}
+
+# ============================================================
+# MAIN MENU
+# ============================================================
+
+main_menu() {
+
+    local choice
+
+    while :; do
+
+        clear_screen
+
+        print_logo
+
+        printf \
+            '  %s1.  Update credentials%s\n' \
+            "$WHITE" \
+            "$RESET"
+
+        printf \
+            '  %s2.  Test login%s\n' \
+            "$WHITE" \
+            "$RESET"
+
+        printf \
+            '  %s3.  Exit%s\n\n' \
+            "$WHITE" \
+            "$RESET"
+
+        print_separator
+
+        printf '\n'
+
+        printf \
+            '  %sSelect an option [1-3]: %s' \
+            "$WHITE" \
+            "$RESET"
+
+        IFS= read -r choice || exit 0
+
+        case "$choice" in
+
+            1)
+                update_credentials
+                ;;
+
+            2)
+                test_login
+                ;;
+
+            3)
+                clear_screen
+
+                printf '\n'
+
+                printf \
+                    '  %sGoodbye.%s\n\n' \
+                    "$WHITE" \
+                    "$RESET"
+
+                exit 0
+                ;;
+
+            *)
+                log_error \
+                    'Invalid option.'
+
+                sleep 1
+                ;;
+
+        esac
+
+    done
+}
+
+# ============================================================
+# MAIN
+# ============================================================
+
+require_root
+main_menu

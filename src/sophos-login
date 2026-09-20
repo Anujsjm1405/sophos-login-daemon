@@ -1,0 +1,268 @@
+#!/usr/bin/env bash
+
+set -u
+
+CONFIG="/etc/sophos-login/config"
+CREDENTIALS="/etc/sophos-login/credentials"
+
+TAG="sophos-login"
+
+log() {
+    logger -t "$TAG" "$1"
+}
+
+# ------------------------------------------------------------
+# COMMAND CHECK
+# ------------------------------------------------------------
+
+require_command() {
+    local command_name="$1"
+
+    if ! command -v "$command_name" >/dev/null 2>&1; then
+        log "ERROR: Required command not found: $command_name"
+        exit 1
+    fi
+}
+
+require_command nmcli
+require_command curl
+require_command stat
+require_command logger
+
+# ------------------------------------------------------------
+# FILE VALIDATION
+# ------------------------------------------------------------
+
+validate_file() {
+    local file="$1"
+    local description="$2"
+
+    if [[ ! -e "$file" ]]; then
+        log "ERROR: $description not found: $file"
+        exit 1
+    fi
+
+    if [[ ! -f "$file" ]]; then
+        log "ERROR: $description is not a regular file: $file"
+        exit 1
+    fi
+
+    if [[ ! -r "$file" ]]; then
+        log "ERROR: $description is not readable: $file"
+        exit 1
+    fi
+}
+
+validate_secure_file() {
+    local file="$1"
+    local description="$2"
+
+    validate_file "$file" "$description"
+
+    local owner
+    local group
+    local permissions
+
+    owner="$(stat -c '%U' "$file")"
+    group="$(stat -c '%G' "$file")"
+    permissions="$(stat -c '%a' "$file")"
+
+    if [[ "$owner" != "root" || "$group" != "root" ]]; then
+        log "ERROR: $description must be owned by root:root"
+        log "ERROR: Current ownership: $owner:$group"
+        exit 1
+    fi
+
+    if [[ "$permissions" != "600" ]]; then
+        log "ERROR: $description must have permissions 600"
+        log "ERROR: Current permissions: $permissions"
+        exit 1
+    fi
+}
+
+validate_file "$CONFIG" "Configuration file"
+validate_secure_file "$CREDENTIALS" "Credentials file"
+
+# ------------------------------------------------------------
+# CONFIGURATION
+# ------------------------------------------------------------
+
+if ! source "$CONFIG"; then
+    log "ERROR: Failed to read configuration file"
+    exit 1
+fi
+
+: "${TARGET_SSID:=}"
+: "${GATEWAY:=}"
+: "${TEST_URL:=}"
+
+if [[ -z "$TARGET_SSID" ]]; then
+    log "ERROR: TARGET_SSID is not configured"
+    exit 1
+fi
+
+if [[ -z "$GATEWAY" ]]; then
+    log "ERROR: GATEWAY is not configured"
+    exit 1
+fi
+
+if [[ -z "$TEST_URL" ]]; then
+    log "ERROR: TEST_URL is not configured"
+    exit 1
+fi
+
+if [[ ! "$GATEWAY" =~ ^[^:]+:[0-9]+$ ]]; then
+    log "ERROR: Invalid GATEWAY format"
+    log "ERROR: Expected format: host:port"
+    exit 1
+fi
+
+if [[ ! "$TEST_URL" =~ ^https?:// ]]; then
+    log "ERROR: TEST_URL must use http:// or https://"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# CURRENT NETWORK
+# ------------------------------------------------------------
+
+CURRENT_SSID="$(
+    nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null |
+        awk -F: '$1 == "yes" {print $2; exit}'
+)"
+
+if [[ -z "$CURRENT_SSID" ]]; then
+    log "No active Wi-Fi connection detected."
+    exit 0
+fi
+
+log "Connected to $CURRENT_SSID"
+
+if [[ "$CURRENT_SSID" != "$TARGET_SSID" ]]; then
+    log "Network is not configured as a target"
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# TARGET NETWORK
+# ------------------------------------------------------------
+
+# ------------------------------------------------------------
+# CREDENTIALS
+# ------------------------------------------------------------
+
+if ! source "$CREDENTIALS"; then
+    log "ERROR: Failed to read credentials file"
+    exit 1
+fi
+
+: "${USERNAME:=}"
+: "${PASSWORD:=}"
+
+if [[ -z "$USERNAME" ]]; then
+    log "ERROR: USERNAME is not configured"
+    exit 1
+fi
+
+if [[ -z "$PASSWORD" ]]; then
+    log "ERROR: PASSWORD is not configured"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# INTERNET CONNECTIVITY
+# ------------------------------------------------------------
+
+log "Checking Internet connectivity..."
+
+if curl \
+    --silent \
+    --show-error \
+    --fail \
+    --max-time 5 \
+    --connect-timeout 3 \
+    "$TEST_URL" \
+    >/dev/null 2>&1; then
+
+    log "Internet available; authentication not required"
+    exit 0
+fi
+
+log "Internet unavailable; authentication required"
+
+# ------------------------------------------------------------
+# SOPHOS AUTHENTICATION
+# ------------------------------------------------------------
+
+LOGIN_URL="http://${GATEWAY}/login.xml"
+
+log "Authenticating with Sophos gateway"
+
+RESPONSE="$(
+    curl \
+        --silent \
+        --show-error \
+        --max-time 15 \
+        --connect-timeout 5 \
+        --location \
+        --data-urlencode "username=${USERNAME}" \
+        --data-urlencode "password=${PASSWORD}" \
+        "$LOGIN_URL" \
+        2>/dev/null
+)"
+
+CURL_STATUS=$?
+
+if [[ "$CURL_STATUS" -ne 0 ]]; then
+    log "ERROR: Failed to connect to Sophos gateway"
+    exit 1
+fi
+
+if [[ -z "$RESPONSE" ]]; then
+    log "ERROR: Sophos gateway returned an empty response"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# AUTHENTICATION RESULT
+# ------------------------------------------------------------
+
+if printf '%s' "$RESPONSE" |
+    grep -Eiq \
+        'failed|failure|invalid|incorrect|wrong|denied|error'; then
+
+    log "ERROR: Sophos authentication failed"
+    exit 1
+fi
+
+if printf '%s' "$RESPONSE" |
+    grep -Eiq \
+        'success|logged.?in|login.?successful|authentication.?successful'; then
+
+    log "Authentication successful"
+else
+    log "ERROR: Sophos gateway returned an unexpected response"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# INTERNET VERIFICATION
+# ------------------------------------------------------------
+
+log "Verifying Internet connectivity..."
+
+if curl \
+    --silent \
+    --show-error \
+    --fail \
+    --max-time 10 \
+    --connect-timeout 5 \
+    "$TEST_URL" \
+    >/dev/null 2>&1; then
+
+    log "Internet connectivity restored"
+    exit 0
+fi
+
+log "ERROR: Authentication succeeded but Internet is still unavailable"
+exit 1

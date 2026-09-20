@@ -1,0 +1,5 @@
+TARGET_SSID="WCE Wi-Fi 6"
+
+GATEWAY="192.168.1.8:8090"
+
+TEST_URL="https://www.google.com/generate_204"

@@ -1,0 +1,113 @@
+#!/usr/bin/env bash
+
+set -u
+
+SERVICE="sophos-login.service"
+LOG_TAG="sophos-login"
+
+CONFIG="/etc/sophos-login/config"
+STATE_DIR="/run/sophos-login"
+STATE_FILE="$STATE_DIR/connection"
+
+# ------------------------------------------------------------
+# LOGGING
+# ------------------------------------------------------------
+
+log() {
+    logger -t "$LOG_TAG" "$*"
+}
+
+# ------------------------------------------------------------
+# CONFIGURATION
+# ------------------------------------------------------------
+
+if [[ ! -r "$CONFIG" ]]; then
+    log "ERROR: Configuration file not found"
+    exit 1
+fi
+
+source "$CONFIG"
+
+: "${TARGET_SSID:=}"
+
+if [[ -z "$TARGET_SSID" ]]; then
+    log "ERROR: TARGET_SSID is not configured"
+    exit 1
+fi
+
+# ------------------------------------------------------------
+# NETWORK
+# ------------------------------------------------------------
+
+get_ssid() {
+    nmcli -t -f ACTIVE,SSID dev wifi 2>/dev/null |
+        awk -F: '$1 == "yes" {print $2; exit}'
+}
+
+SSID="$(get_ssid)"
+
+if [[ -z "$SSID" ]]; then
+    rm -f "$STATE_FILE"
+    systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# NETWORK DISCONNECT
+# ------------------------------------------------------------
+
+if [[ "${2:-}" == "down" ]]; then
+    rm -f "$STATE_FILE"
+    systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# TARGET NETWORK
+# ------------------------------------------------------------
+
+if [[ "$SSID" != "$TARGET_SSID" ]]; then
+    rm -f "$STATE_FILE"
+    systemctl stop "$SERVICE" >/dev/null 2>&1 || true
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# EVENT FILTER
+# ------------------------------------------------------------
+
+if [[ "${2:-}" != "up" ]]; then
+    exit 0
+fi
+
+# ------------------------------------------------------------
+# DUPLICATE EVENT PROTECTION
+# ------------------------------------------------------------
+
+mkdir -p "$STATE_DIR"
+chmod 755 "$STATE_DIR"
+
+CURRENT_CONNECTION="$SSID"
+
+if [[ -f "$STATE_FILE" ]]; then
+    LAST_CONNECTION="$(cat "$STATE_FILE" 2>/dev/null || true)"
+
+    if [[ "$LAST_CONNECTION" == "$CURRENT_CONNECTION" ]]; then
+        exit 0
+    fi
+fi
+
+printf '%s\n' "$CURRENT_CONNECTION" > "$STATE_FILE"
+chmod 644 "$STATE_FILE"
+
+# ------------------------------------------------------------
+# START DAEMON
+# ------------------------------------------------------------
+
+if ! systemctl start "$SERVICE" >/dev/null 2>&1; then
+    rm -f "$STATE_FILE"
+    log "ERROR: Failed to start Sophos login service"
+    exit 1
+fi
+
+exit 0
